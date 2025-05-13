@@ -63,6 +63,8 @@ class Attendance(db.Model):
     course_id = db.Column(db.Integer, db.ForeignKey('courses.course_id'))
     timestamp = db.Column(db.DateTime, default=datetime.utcnow)
     present = db.Column(db.Boolean, default=True)
+    session_id = db.Column(db.String, nullable=False)  # UUID or timestamp string
+    closed = db.Column(db.Boolean, default=False)
 
 class Lecturer(db.Model):
     __tablename__ = 'lecturers'

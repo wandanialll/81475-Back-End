@@ -5,7 +5,7 @@ from flask_cors import CORS
 app = create_app()
 
 # Apply CORS globally to all routes
-CORS(app)
+CORS(app, resources={r"/api/*": {"origins": "*"}})
 
 if __name__ == "__main__":
     app.run(debug=False)
