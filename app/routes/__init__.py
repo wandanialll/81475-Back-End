@@ -9,8 +9,15 @@ import firebase_admin
 from firebase_admin import auth as firebase_auth, credentials
 from google.generativeai import types
 
+# credentials certificate using pythondotenv
+from dotenv import load_dotenv
+load_dotenv()
+
+credentials_path = os.getenv("GOOGLE_APPLICATION_CREDENTIALS")
+
+
 # Initialize Firebase only once
-cred = credentials.Certificate("C:\\Users\\dania\\Desktop\\siBijak\\wanmuhammaddanial81475-firebase-adminsdk-fbsvc-c09ba41e29.json")
+cred = credentials.Certificate(credentials_path)
 firebase_admin.initialize_app(cred)
 
 api = Blueprint('api', __name__)
