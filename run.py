@@ -10,7 +10,10 @@ load_dotenv()
 app = create_app()
 
 # Apply CORS globally to all routes
-CORS(app, resources={r"/api/*": {"origins": "*"}})
+CORS(app, resources={r"/api/*": {"origins": "https://fyp.wandanial.com"}},
+     supports_credentials=True,
+     allow_headers=["Content-Type", "Authorization"],
+     allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"])
 
 if __name__ == "__main__":
     app.run(debug=False)
