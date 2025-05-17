@@ -8,6 +8,7 @@ from app.db import db
 import firebase_admin
 from firebase_admin import auth as firebase_auth, credentials
 from google.generativeai import types
+from flask_cors import CORS
 
 # credentials certificate using pythondotenv
 from dotenv import load_dotenv
@@ -21,6 +22,7 @@ cred = credentials.Certificate(credentials_path)
 firebase_admin.initialize_app(cred)
 
 api = Blueprint('api', __name__)
+CORS(api, resources={r"/api/*": {"origins": "https://fyp.wandanial.com"}})  # Allow all origins (change to specific origin in production)
 
 # Handle the OPTIONS request manually for preflight
 @api.route('/api/lecturer/courses', methods=["OPTIONS"])
