@@ -22,7 +22,6 @@ cred = credentials.Certificate(credentials_path)
 firebase_admin.initialize_app(cred)
 
 api = Blueprint('api', __name__)
-CORS(api, supports_credentials=True, resources={r"/api/*": {"origins": "https://fyp.wandanial.com"}})
   # Allow all origins (change to specific origin in production)
 
 # Handle the OPTIONS request manually for preflight

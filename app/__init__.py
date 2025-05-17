@@ -15,20 +15,7 @@ def create_app():
     db.init_app(app)
 
     # CORS Setup for all routes, allow any origin
-    CORS(app, resources={
-    r"/api/*": {
-        "origins": "https://fyp.wandanial.com",
-        "supports_credentials": True,
-        "allow_headers": [
-            "Content-Type",
-            "Authorization",
-            "Access-Control-Allow-Origin",
-            "Access-Control-Allow-Credentials",
-            "X-Requested-With"
-        ],
-        "methods": ["GET", "POST", "PUT", "DELETE", "OPTIONS"]
-    }
-})
+    CORS(app, resources={r"/api/*": {"origins": "*"}})
 
     with app.app_context():
         db.create_all()
