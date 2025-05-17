@@ -2,7 +2,8 @@ import os
 import uuid
 from flask import Blueprint, jsonify, request
 import requests
-from app.models import Course, Enrollment, Student, Lecturer, Attendance
+from werkzeug.utils import secure_filename
+from app.models import Course, Enrollment, Student, Lecturer, Attendance, StudentPhoto
 from app.db import db
 import firebase_admin
 from firebase_admin import auth as firebase_auth, credentials
@@ -143,86 +144,6 @@ def get_lecturer_dashboard():
         "courses": course_data
     })
 
-    if request.method == "OPTIONS":
-        response = jsonify({"message": "OK"})
-        response.headers.add('Access-Control-Allow-Origin', '*')
-        response.headers.add('Access-Control-Allow-Headers', 'Content-Type, Authorization')
-        response.headers.add('Access-Control-Allow-Methods', 'GET, OPTIONS')
-        return response
-
-    id_token = request.headers.get("Authorization", "").replace("Bearer ", "")
-    try:
-        decoded_token = firebase_auth.verify_id_token(id_token, clock_skew_seconds=60)
-        lecturer_email = decoded_token["email"]
-    except Exception as e:
-        return jsonify({"error": "Unauthorized", "details": str(e)}), 401
-
-    lecturer = Lecturer.query.filter_by(email=lecturer_email).first()
-    if not lecturer:
-        return jsonify({"error": "Lecturer not found"}), 404
-
-    overall_total_students = 0
-    overall_total_present = 0
-    overall_total_absents = 0
-    overall_total_alerts = 0
-
-    course_data = []
-
-    for course in lecturer.courses:
-        enrolled_students = course.enrollments
-        total_students = len(enrolled_students)
-        present_count = 0
-        alerts = 0
-
-        student_info = []
-        for enrollment in enrolled_students:
-            student = enrollment.student
-            attendances = [a for a in student.attendance_records if a.course_id == course.course_id]
-
-            was_present = any(a.present for a in attendances)
-            absence_count = sum(1 for a in attendances if not a.present)
-
-            present_status = "present" if was_present else "absent"
-            last_seen = max([a.timestamp.strftime("%Y-%m-%d %H:%M") for a in attendances], default="N/A")
-
-            if present_status == "present":
-                present_count += 1
-
-            # Assuming alert if absent more than 3 times
-            if absence_count >= 3:
-                alerts += 1
-
-            student_info.append({
-                "studentId": student.student_id,
-                "name": student.name,
-                "status": present_status,
-                "lastSeen": last_seen,
-                "absences": absence_count
-            })
-
-        absents = total_students - present_count
-        overall_total_students += total_students
-        overall_total_present += present_count
-        overall_total_absents += absents
-        overall_total_alerts += alerts
-
-        course_data.append({
-            "course_id": course.course_id,
-            "name": course.name,
-            "totalStudents": total_students,
-            "totalPresent": present_count,
-            "totalAbsents": absents,
-            "alerts": alerts,
-            "students": student_info
-        })
-
-    return jsonify({
-        "totalStudents": overall_total_students,
-        "totalPresent": overall_total_present,
-        "totalAbsents": overall_total_absents,
-        "totalAlerts": overall_total_alerts,
-        "courses": course_data
-    })
 
 # gemini  interaction
 def query_gemini(query):
@@ -243,11 +164,14 @@ def query_gemini(query):
         "responseMimeType": "text/plain"
     },
     "systemInstruction": {
-        "parts": [
-            {"text": "Respond in point form"}
-        ]
+    "parts": [
+        {
+        "text": "Route all requests to either: \ncommands: (\n\"create attendance\": {\"type\": \"navigation\", \"label\": \"Create Attendance Page\", \"route\": \"/create-attendance\"},\n\"view attendance\": {\"type\": \"navigation\", \"label\": \"View Attendance\", \"route\": \"/attendance/view\"},\n\"add new student\": {\"type\": \"navigation\", \"label\": \"Add New Student\", \"route\": \"/add-student\"},\n\"view students\": {\"type\": \"navigation\", \"label\": \"View Students\", \"route\": \"/students\"},\n\"view courses\": {\"type\": \"navigation\", \"label\": \"View Courses\", \"route\": \"/courses\"}\n)\n\nReturn response in two-part JSON:\n{\n  \"uiRespond\": (short simple message confirming),\n  \"backendRespond\": (command title)\n}\n\nIf user request does not fit any of the commands, return a simple message and code [NO_VALID_REQUEST].\n\nIMPORTANT: only respond in English."
+        }
+    ]
     }
-}
+
+    }
 
 
     headers = {
@@ -267,6 +191,7 @@ def query_gemini(query):
             "type": "llm-error",
             "label": f"LLM Error: {str(e)}"
         }
+    
 
 # @api.route("/api/search", methods=["GET", "OPTIONS"])
 # def search():
@@ -357,6 +282,9 @@ def search():
     command_map = {
         "create attendance": {"type": "navigation", "label": "Create Attendance Page", "route": "/create-attendance"},
         "view attendance": {"type": "navigation", "label": "View Attendance", "route": "/attendance/view"},
+        "add new student": {"type": "navigation", "label": "Add New Student", "route": "/add-student"},
+        "view students": {"type": "navigation", "label": "View Students", "route": "/students"},
+        "view courses": {"type": "navigation", "label": "View Courses", "route": "/courses"},
     }
 
     for cmd, val in command_map.items():
@@ -533,3 +461,44 @@ def close_attendance_sheet():
 
     db.session.commit()
     return jsonify({"message": f"Closed sheet {session_id}"}), 200
+
+@api.route("/api/enroll", methods=["POST", "OPTIONS"])
+def enroll_student():
+    if request.method == "OPTIONS":
+        response = jsonify({"message": "OK"})
+        response.headers.add("Access-Control-Allow-Origin", "*")
+        response.headers.add("Access-Control-Allow-Headers", "Content-Type, Authorization")
+        response.headers.add("Access-Control-Allow-Methods", "POST, OPTIONS")
+        return response
+
+    name = request.form.get("name")
+    photos = request.files.getlist("photo")
+
+    if not name:
+        return jsonify({"error": "Name is required"}), 400
+    if len(photos) != 3:
+        return jsonify({"error": "Exactly 3 photos are required"}), 400
+
+    # Create student
+    new_student = Student(name=name)
+    db.session.add(new_student)
+    db.session.commit()  # Must commit here to get student_id
+
+    # Save photos to DB
+    for idx, photo in enumerate(photos, start=1):
+        filename = secure_filename(f"{name}_{idx}.jpg")
+        new_photo = StudentPhoto(
+            student_id=new_student.student_id,
+            image_data=photo.read(),
+            filename=filename,
+            mimetype=photo.mimetype
+        )
+        db.session.add(new_photo)
+
+    db.session.commit()
+
+    return jsonify({
+        "message": "Enrollment successful",
+        "student_id": new_student.student_id,
+        "photos_saved": 3
+    }), 200

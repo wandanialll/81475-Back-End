@@ -1,0 +1,16 @@
+# Prevent sensitive and unnecessary files from being copied into the image
+
+.env
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.db
+*.sqlite3
+*.log
+*.pem
+*.crt
+*.key
+firebasecredential.json
+migration/
+wanmuhammaddanial81475-firebase-adminsdk-fbsvc-c09ba41e29.json

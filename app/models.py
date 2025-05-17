@@ -13,6 +13,15 @@ class Student(db.Model):
     chatbot_interactions = db.relationship('ChatbotInteraction', backref='student')
     attendance_records = db.relationship('Attendance', backref='student')
 
+class StudentPhoto(db.Model):
+    __tablename__ = 'student_photos'
+    photo_id = db.Column(db.Integer, primary_key=True)
+    student_id = db.Column(db.Integer, db.ForeignKey('students.student_id'), nullable=False)
+    image_data = db.Column(db.LargeBinary, nullable=False)
+    filename = db.Column(db.String, nullable=False)
+    mimetype = db.Column(db.String, nullable=False)
+    captured_at = db.Column(db.DateTime, default=datetime.utcnow)
+
 
 class Course(db.Model):
     __tablename__ = 'courses'
