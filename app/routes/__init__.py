@@ -11,6 +11,15 @@ from google.generativeai import types
 from flask_cors import CORS
 from sqlalchemy import func
 from sqlalchemy.sql import case
+import json
+import pickle
+import numpy as np
+from datetime import datetime
+from sklearn.metrics.pairwise import cosine_similarity
+from insightface.app import FaceAnalysis
+import base64
+import cv2
+from app.recognition.insightface_loader import face_app, student_embeddings
 
 # credentials certificate using pythondotenv
 from dotenv import load_dotenv
@@ -193,75 +202,26 @@ def query_gemini(query):
         response = requests.post(gemini_url, json=payload, headers=headers)
         response.raise_for_status()
         data = response.json()
-        return {
-            "type": "llm-response",
-            "label": data["candidates"][0]["content"]["parts"][0]["text"]
-        }
+        text = data["candidates"][0]["content"]["parts"][0]["text"]
+
+        try:
+            parsed = json.loads(text)
+            return {
+                "type": "llm-response",
+                "uiRespond": parsed.get("uiRespond",""),
+                "backendRespond": parsed.get("backendRespond","")
+            }
+        except json.JSONDecodeError:
+            return {
+                "type": "llm-response",
+                "uiRespond": text,
+                "backendRespond": ""
+            }
     except Exception as e:
         return {
             "type": "llm-error",
             "label": f"LLM Error: {str(e)}"
         }
-    
-
-# @api.route("/api/search", methods=["GET", "OPTIONS"])
-# def search():
-#     if request.method == "OPTIONS":
-#         response = jsonify({"message": "OK"})
-#         response.headers.add('Access-Control-Allow-Origin', '*')
-#         response.headers.add('Access-Control-Allow-Headers', 'Content-Type, Authorization')
-#         response.headers.add("Access-Control-Allow-Methods", "GET, OPTIONS")
-#         return response
-
-#     id_token = request.headers.get("Authorization", "").replace("Bearer ", "")
-#     try:
-#         decoded_token = firebase_auth.verify_id_token(id_token, clock_skew_seconds=60)
-#         lecturer_email = decoded_token["email"]
-#         print("Decoded Token:", decoded_token)
-#     except Exception as e:
-#         return jsonify({"error": "Unauthorized", "details": str(e)}), 401
-
-#     lecturer = Lecturer.query.filter_by(email=lecturer_email).first()
-#     if not lecturer:
-#         return jsonify([])
-
-#     query = request.args.get("q", "").strip().lower()
-#     if not query:
-#         return jsonify([])
-
-#     results = []
-
-#     # --- Command-based routing ---
-#     command_map = {
-#         "create attendance": {"type": "navigation", "label": "Create Attendance Page", "route": "/create-attendance"},
-#         "view attendance": {"type": "navigation", "label": "View Attendance", "route": "/attendance/view"},
-#     }
-
-#     for cmd, val in command_map.items():
-#         if query in cmd.lower():
-#             results.append(val)
-
-#     # --- Search lecturer's courses only ---
-#     courses = [
-#         course for course in lecturer.courses
-#         if query in course.name.lower()
-#     ]
-
-#     results.extend([
-#         {
-#             "type": "course",
-#             "course_id": course.course_id,
-#             "label": course.name,
-#             "route": f"/course/{course.course_id}/dashboard"
-#         }
-#         for course in courses
-#     ])
-
-#     response = jsonify(results)
-#     response.headers.add('Access-Control-Allow-Origin', '*')
-#     response.headers.add('Access-Control-Allow-Headers', 'Content-Type, Authorization')
-#     response.headers.add("Access-Control-Allow-Methods", "GET, OPTIONS")
-#     return response
 
 @api.route("/api/search", methods=["GET", "OPTIONS"])
 def search():
@@ -317,7 +277,18 @@ def search():
     # --- Fallback to LLM if no results found ---
     if not results:
         llm_result = query_gemini(query)
-        results.append(llm_result)
+        if llm_result["type"] == "llm-response":
+            backend_cmd = llm_result.get("backendRespond", "").lower()
+            if backend_cmd in command_map:
+                results.append(command_map[backend_cmd])
+            else:
+                results.append({
+                    "type": "llm-response",
+                    "label": llm_result.get("uiRespond", "No UI response"),
+                    "llm_backend": backend_cmd
+                })
+        else:
+            return jsonify(results if isinstance(results, list) else [results])
 
     response = jsonify(results)
     response.headers.add('Access-Control-Allow-Origin', '*')
@@ -442,6 +413,42 @@ def get_open_sheets(course_id):
         {"session_id": s.session_id, "started_at": s.started_at.isoformat()}
         for s in sheets
     ])
+
+# get attendance sheet by session_id
+@api.route("/api/attendance/sheet/<session_id>", methods=["GET", "OPTIONS"])
+def get_attendance_sheet(session_id):
+    if request.method == "OPTIONS":
+        response = jsonify({"message": "OK"})
+        response.headers.add('Access-Control-Allow-Origin', '*')
+        response.headers.add('Access-Control-Allow-Headers', 'Content-Type, Authorization')
+        response.headers.add('Access-Control-Allow-Methods', 'GET, OPTIONS')
+        return response
+
+    id_token = request.headers.get("Authorization", "").replace("Bearer ", "")
+    try:
+        decoded_token = firebase_auth.verify_id_token(id_token, clock_skew_seconds=60)
+        lecturer_email = decoded_token["email"]
+    except Exception as e:
+        return jsonify({"error": "Unauthorized", "details": str(e)}), 401
+
+    lecturer = Lecturer.query.filter_by(email=lecturer_email).first()
+    if not lecturer:
+        return jsonify({"error": "Lecturer not found"}), 404
+
+    attendance_records = Attendance.query.filter_by(session_id=session_id).all()
+    if not attendance_records:
+        return jsonify({"error": "No attendance records found for this session"}), 404
+
+    records = [
+        {
+            "student_id": record.student_id,
+            "present": record.present,
+            "timestamp": record.timestamp.isoformat()
+        }
+        for record in attendance_records
+    ]
+
+    return jsonify(records)
     
 @api.route("/api/attendance/close-sheet", methods=["POST", "OPTIONS"])
 def close_attendance_sheet():

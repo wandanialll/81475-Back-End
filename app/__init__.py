@@ -4,6 +4,7 @@ from .db import db
 from dotenv import load_dotenv
 import os
 from .routes import api
+from .routes.attendance_recognition import attendance_recognition_bp
 
 def create_app():
     load_dotenv()
@@ -11,6 +12,8 @@ def create_app():
     app.config['SQLALCHEMY_DATABASE_URI'] = os.getenv("DATABASE_URL")
     app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
     app.register_blueprint(api)
+    app.register_blueprint(attendance_recognition_bp)
+
 
     db.init_app(app)
 
