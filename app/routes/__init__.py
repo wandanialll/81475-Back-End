@@ -1,6 +1,6 @@
 import os
 import uuid
-from flask import Blueprint, jsonify, request
+from flask import Blueprint, jsonify, request, Response
 import requests
 from werkzeug.utils import secure_filename
 from app.models import Course, Enrollment, Student, Lecturer, Attendance, StudentPhoto
@@ -9,6 +9,8 @@ import firebase_admin
 from firebase_admin import auth as firebase_auth, credentials
 from google.generativeai import types
 from flask_cors import CORS
+from sqlalchemy import func
+from sqlalchemy.sql import case
 
 # credentials certificate using pythondotenv
 from dotenv import load_dotenv
@@ -507,7 +509,72 @@ def enroll_student():
     db.session.commit()
 
     return jsonify({
+        "success": True,
         "message": "Enrollment successful",
         "student_id": new_student.student_id,
         "photos_saved": 3
     }), 200
+
+@api.route("/api/photo/<int:photo_id>")
+def serve_photo(photo_id):
+    photo = StudentPhoto.query.get_or_404(photo_id)
+    return Response(photo.image_data, mimetype=photo.mimetype)
+
+# overall attendance for lecturer
+@api.route('/api/lecturer/attendance/overall-sessions', methods=['GET', 'OPTIONS'])
+def lecturer_attendance_performance():
+    if request.method == "OPTIONS":
+        response = jsonify({"message": "OK"})
+        response.headers.add("Access-Control-Allow-Origin", "*")
+        response.headers.add("Access-Control-Allow-Headers", "Content-Type, Authorization")
+        response.headers.add("Access-Control-Allow-Methods", "POST, OPTIONS")
+        return response
+
+    id_token = request.headers.get("Authorization", "").replace("Bearer ", "")
+    try:
+        decoded_token = firebase_auth.verify_id_token(id_token, clock_skew_seconds=60)
+        lecturer_email = decoded_token["email"]
+    except Exception as e:
+        return jsonify({"error": "Unauthorized", "details": str(e)}), 401
+
+    lecturer = Lecturer.query.filter_by(email=lecturer_email).first()
+    if not lecturer:
+        return jsonify({"error": "Lecturer not found"}), 404
+
+    course_ids = [c.course_id for c in lecturer.courses]
+
+    if not course_ids:
+        return jsonify({
+            "lecturer": lecturer.name,
+            "sessions": []
+        })
+
+    present_count_expr = func.sum(
+    case((Attendance.present, 1), else_=0)
+    )
+
+    session_stats = (
+        db.session.query(
+            Attendance.session_id,
+            present_count_expr.label("present_count"),
+            func.count(Attendance.attendance_id).label("total_count")
+        )
+        .filter(Attendance.course_id.in_(course_ids))
+        .group_by(Attendance.session_id, Attendance.session_created_at)
+        .order_by(Attendance.session_created_at.asc())
+        .all()
+    )
+
+    sessions = []
+    for session in session_stats:
+        sessions.append({
+            "sessionId": session.session_id,
+            "present": session.present_count,
+            "absent": session.total_count - session.present_count,
+        })
+
+    return jsonify({
+        "lecturer": lecturer.name,
+        "sessions": sessions,
+        "sessionId": session.session_id,
+    })
