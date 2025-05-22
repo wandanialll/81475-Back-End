@@ -15,10 +15,26 @@ def decode_image(base64_str):
     nparr = np.frombuffer(img_data, np.uint8)
     return cv2.imdecode(nparr, cv2.IMREAD_COLOR)
 
-def find_best_match(embedding):
+# def find_best_match(embedding):
+#     best_id = None
+#     best_score = -1
+#     for sid, ref_emb in student_embeddings.items():
+#         score = cosine_similarity([embedding], [ref_emb])[0][0]
+#         if score > best_score:
+#             best_id = sid
+#             best_score = score
+#     return best_id, best_score
+def find_best_match(embedding, session_id):
+    # Get already accounted student IDs
+    accounted_ids = set(
+        a.student_id for a in Attendance.query.filter_by(session_id=session_id, present=True).all()
+    )
+
     best_id = None
     best_score = -1
     for sid, ref_emb in student_embeddings.items():
+        if sid in accounted_ids:
+            continue  # Skip already marked students
         score = cosine_similarity([embedding], [ref_emb])[0][0]
         if score > best_score:
             best_id = sid
@@ -49,6 +65,12 @@ def mark_by_face():
     
     data = request.json
     session_id = data.get("session_id")
+    reset = data.get("reset", False)
+
+    if reset:
+        Attendance.query.filter_by(session_id=session_id).update({Attendance.present: False})
+        db.session.commit()
+
     img = decode_image(data.get("image"))
 
     faces = face_app.get(img)
@@ -56,13 +78,23 @@ def mark_by_face():
         return jsonify({"status": "no_faces_detected", "allAccounted": False}), 200
 
     results = []
+    image_sent = False
 
     for face in faces:
         emb = face.embedding
-        matched_id, score = find_best_match(emb)
+        matched_id, score = find_best_match(emb, session_id)
         if score >= THRESHOLD:
+            
+            x1, y1, x2, y2 = [int(i) for i in face.bbox]
+            face_crop = img[y1:y2, x1:x2]
+
+            # encode as base64
+            _, buffer = cv2.imencode(".jpg", face_crop)
+            face_base64 = base64.b64encode(buffer).decode("utf-8")
+            face_data_url = f"data:image/jpeg;base64,{face_base64}"
+
             mark_attendance(matched_id, session_id)
-            results.append({"student_id": matched_id, "score": float(score)})
+            results.append({"student_id": matched_id, "score": float(score) , "face": face_data_url})
     
     total_students = (
         db.session.query(Attendance).filter_by(session_id=session_id)
