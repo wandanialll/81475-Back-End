@@ -323,8 +323,6 @@ def search():
     response.headers.add("Access-Control-Allow-Methods", "GET, OPTIONS")
     return response
 
-
-
 @api.route("/api/course/<int:course_id>/dashboard", methods=["GET"])
 def get_course_dashboard(course_id):
     id_token = request.headers.get("Authorization", "").replace("Bearer ", "")
@@ -615,8 +613,63 @@ def lecturer_attendance_performance():
         "sessionId": session.session_id,
     })
 
+# @api.route("/api/chat", methods=["POST", "OPTIONS"])
+# def gemini_chat():
+#     if request.method == "OPTIONS":
+#         response = jsonify({"message": "OK"})
+#         response.headers.add("Access-Control-Allow-Origin", "*")
+#         response.headers.add("Access-Control-Allow-Headers", "Content-Type, Authorization")
+#         response.headers.add("Access-Control-Allow-Methods", "POST, OPTIONS")
+#         return response
+    
+#     try:
+#         # Get JSON data from request
+#         data = request.get_json()
+        
+#         if not data:
+#             return jsonify({"error": "No data provided"}), 400
+        
+#         message = data.get("message")
+#         if not message:
+#             return jsonify({"error": "Message is required"}), 400
+        
+#         # Optional: Get conversation history for context
+#         history = data.get("history", [])
+        
+#         # Prepare the prompt with history if provided
+#         if history:
+#             # Build context from history
+#             context_messages = []
+#             for msg in history[-10:]:  # Last 10 messages for context
+#                 role = "Human" if msg.get("role") == "user" else "Assistant" 
+#                 context_messages.append(f"{role}: {msg.get('content', '')}")
+            
+#             full_prompt = "\n".join(context_messages) + f"\nHuman: {message}\nAssistant:"
+#         else:
+#             full_prompt = message
+        
+#         # Generate response from Gemini
+#         response = model.generate_content(full_prompt)
+        
+#         if not response.text:
+#             return jsonify({"error": "No response generated"}), 500
+        
+#         return jsonify({
+#             "success": True,
+#             "response": response.text,
+#             "message": "Response generated successfully"
+#         }), 200
+        
+#     except Exception as e:
+#         return jsonify({
+#             "error": "Failed to generate response",
+#             "details": str(e)
+#         }), 500
 @api.route("/api/chat", methods=["POST", "OPTIONS"])
 def gemini_chat():
+    # Initialize response
+    response = None
+    
     if request.method == "OPTIONS":
         response = jsonify({"message": "OK"})
         response.headers.add("Access-Control-Allow-Origin", "*")
@@ -629,18 +682,21 @@ def gemini_chat():
         data = request.get_json()
         
         if not data:
-            return jsonify({"error": "No data provided"}), 400
+            response = jsonify({"error": "No data provided"})
+            response.headers.add("Access-Control-Allow-Origin", "*")
+            return response, 400
         
         message = data.get("message")
         if not message:
-            return jsonify({"error": "Message is required"}), 400
+            response = jsonify({"error": "Message is required"})
+            response.headers.add("Access-Control-Allow-Origin", "*")
+            return response, 400
         
         # Optional: Get conversation history for context
         history = data.get("history", [])
         
         # Prepare the prompt with history if provided
         if history:
-            # Build context from history
             context_messages = []
             for msg in history[-10:]:  # Last 10 messages for context
                 role = "Human" if msg.get("role") == "user" else "Assistant" 
@@ -651,25 +707,124 @@ def gemini_chat():
             full_prompt = message
         
         # Generate response from Gemini
-        response = model.generate_content(full_prompt)
+        gemini_response = model.generate_content(full_prompt)
         
-        if not response.text:
-            return jsonify({"error": "No response generated"}), 500
+        if not gemini_response.text:
+            response = jsonify({"error": "No response generated"})
+            response.headers.add("Access-Control-Allow-Origin", "*")
+            return response, 500
         
-        return jsonify({
+        response = jsonify({
             "success": True,
-            "response": response.text,
+            "response": gemini_response.text,
             "message": "Response generated successfully"
-        }), 200
+        })
+        response.headers.add("Access-Control-Allow-Origin", "*")
+        return response, 200
         
     except Exception as e:
-        return jsonify({
+        response = jsonify({
             "error": "Failed to generate response",
             "details": str(e)
-        }), 500
+        })
+        response.headers.add("Access-Control-Allow-Origin", "*")
+        return response, 500
     
+# @api.route("/api/student-details/<int:student_id>", methods=["GET", "OPTIONS"])
+# def get_student_details(student_id: int) -> Union[Tuple[dict, int], dict]:
+#     if request.method == "OPTIONS":
+#         response = jsonify({"message": "OK"})
+#         response.headers.add("Access-Control-Allow-Origin", "*")
+#         response.headers.add("Access-Control-Allow-Headers", "Content-Type, Authorization")
+#         response.headers.add("Access-Control-Allow-Methods", "GET, OPTIONS")
+#         return response
+
+#     # Validate student_id
+#     if student_id <= 0:
+#         return jsonify({"error": "Invalid student ID"}), 400
+
+#     # Authenticate lecturer
+#     id_token = request.headers.get("Authorization", "").replace("Bearer ", "")
+#     try:
+#         decoded_token = firebase_auth.verify_id_token(id_token, clock_skew_seconds=60)
+#         lecturer_email = decoded_token.get("email")
+#         if not lecturer_email:
+#             return jsonify({"error": "Unauthorized", "details": "Email not found in token"}), 401
+#     except firebase_auth.ExpiredIdTokenError:
+#         return jsonify({"error": "Unauthorized", "details": "Token has expired"}), 401
+#     except firebase_auth.InvalidIdTokenError:
+#         return jsonify({"error": "Unauthorized", "details": "Invalid token"}), 401
+#     except Exception as e:
+#         return jsonify({"error": "Unauthorized", "details": str(e)}), 401
+
+#     # Fetch lecturer
+#     lecturer = Lecturer.query.filter_by(email=lecturer_email).first()
+#     if not lecturer:
+#         return jsonify({"error": "Lecturer not found"}), 404
+
+#     # Fetch student with eager loading
+#     try:
+#         student = Student.query.options(
+#             joinedload(Student.enrollments).joinedload(Enrollment.course),
+#             joinedload(Student.photos)
+#         ).get(student_id)
+#         if not student:
+#             return jsonify({"error": "Student not found"}), 404
+#     except Exception as e:
+#         return jsonify({"error": "Database error", "details": str(e)}), 500
+
+#     # Authorization check: Ensure student is enrolled in a course taught by the lecturer
+#     lecturer_course_ids = {course.course_id for course in lecturer.courses}
+#     student_course_ids = {enrollment.course.course_id for enrollment in student.enrollments if enrollment.course}
+#     if not lecturer_course_ids & student_course_ids:  # No intersection
+#         return jsonify({"error": "Forbidden", "details": "No access to this student’s data"}), 403
+
+#     # Fetch attendance records
+#     attendance_records = Attendance.query.filter_by(student_id=student.student_id).all()
+
+#     # Format attendance records
+#     records = [
+#         {
+#             "courseId": record.course_id,
+#             "sessionId": record.session_id,
+#             "present": record.present,
+#             "timestamp": record.timestamp.isoformat()
+#         }
+#         for record in attendance_records
+#     ]
+
+#     # Format student photos
+#     photos = [
+#         {
+#             "photoId": photo.photo_id,
+#             "filename": photo.filename,
+#             "mimetype": photo.mimetype,
+#             "capturedAt": photo.captured_at.isoformat(),
+#             "imageData": photo.image_data.hex()  # Convert binary to hex string for JSON
+#         }
+#         for photo in student.photos
+#     ]
+
+#     return jsonify({
+#         "studentId": student.student_id,
+#         "name": student.name,
+#         "courses": [
+#             {
+#                 "courseId": enrollment.course.course_id,
+#                 "name": enrollment.course.name
+#             }
+#             for enrollment in student.enrollments
+#             if enrollment.course
+#         ],
+#         "attendanceRecords": records,
+#         "photos": photos
+#     }), 200
+
 @api.route("/api/student-details/<int:student_id>", methods=["GET", "OPTIONS"])
-def get_student_details(student_id: int) -> Union[Tuple[dict, int], dict]:
+def get_student_details(student_id: int):
+    # Initialize response
+    response = None
+    
     if request.method == "OPTIONS":
         response = jsonify({"message": "OK"})
         response.headers.add("Access-Control-Allow-Origin", "*")
@@ -679,7 +834,9 @@ def get_student_details(student_id: int) -> Union[Tuple[dict, int], dict]:
 
     # Validate student_id
     if student_id <= 0:
-        return jsonify({"error": "Invalid student ID"}), 400
+        response = jsonify({"error": "Invalid student ID"})
+        response.headers.add("Access-Control-Allow-Origin", "*")
+        return response, 400
 
     # Authenticate lecturer
     id_token = request.headers.get("Authorization", "").replace("Bearer ", "")
@@ -687,18 +844,28 @@ def get_student_details(student_id: int) -> Union[Tuple[dict, int], dict]:
         decoded_token = firebase_auth.verify_id_token(id_token, clock_skew_seconds=60)
         lecturer_email = decoded_token.get("email")
         if not lecturer_email:
-            return jsonify({"error": "Unauthorized", "details": "Email not found in token"}), 401
+            response = jsonify({"error": "Unauthorized", "details": "Email not found in token"})
+            response.headers.add("Access-Control-Allow-Origin", "*")
+            return response, 401
     except firebase_auth.ExpiredIdTokenError:
-        return jsonify({"error": "Unauthorized", "details": "Token has expired"}), 401
+        response = jsonify({"error": "Unauthorized", "details": "Token has expired"})
+        response.headers.add("Access-Control-Allow-Origin", "*")
+        return response, 401
     except firebase_auth.InvalidIdTokenError:
-        return jsonify({"error": "Unauthorized", "details": "Invalid token"}), 401
+        response = jsonify({"error": "Unauthorized", "details": "Invalid token"})
+        response.headers.add("Access-Control-Allow-Origin", "*")
+        return response, 401
     except Exception as e:
-        return jsonify({"error": "Unauthorized", "details": str(e)}), 401
+        response = jsonify({"error": "Unauthorized", "details": str(e)})
+        response.headers.add("Access-Control-Allow-Origin", "*")
+        return response, 401
 
     # Fetch lecturer
     lecturer = Lecturer.query.filter_by(email=lecturer_email).first()
     if not lecturer:
-        return jsonify({"error": "Lecturer not found"}), 404
+        response = jsonify({"error": "Lecturer not found"})
+        response.headers.add("Access-Control-Allow-Origin", "*")
+        return response, 404
 
     # Fetch student with eager loading
     try:
@@ -707,15 +874,21 @@ def get_student_details(student_id: int) -> Union[Tuple[dict, int], dict]:
             joinedload(Student.photos)
         ).get(student_id)
         if not student:
-            return jsonify({"error": "Student not found"}), 404
+            response = jsonify({"error": "Student not found"})
+            response.headers.add("Access-Control-Allow-Origin", "*")
+            return response, 404
     except Exception as e:
-        return jsonify({"error": "Database error", "details": str(e)}), 500
+        response = jsonify({"error": "Database error", "details": str(e)})
+        response.headers.add("Access-Control-Allow-Origin", "*")
+        return response, 500
 
     # Authorization check: Ensure student is enrolled in a course taught by the lecturer
     lecturer_course_ids = {course.course_id for course in lecturer.courses}
     student_course_ids = {enrollment.course.course_id for enrollment in student.enrollments if enrollment.course}
     if not lecturer_course_ids & student_course_ids:  # No intersection
-        return jsonify({"error": "Forbidden", "details": "No access to this student’s data"}), 403
+        response = jsonify({"error": "Forbidden", "details": "No access to this student’s data"})
+        response.headers.add("Access-Control-Allow-Origin", "*")
+        return response, 403
 
     # Fetch attendance records
     attendance_records = Attendance.query.filter_by(student_id=student.student_id).all()
@@ -743,7 +916,7 @@ def get_student_details(student_id: int) -> Union[Tuple[dict, int], dict]:
         for photo in student.photos
     ]
 
-    return jsonify({
+    response = jsonify({
         "studentId": student.student_id,
         "name": student.name,
         "courses": [
@@ -756,4 +929,6 @@ def get_student_details(student_id: int) -> Union[Tuple[dict, int], dict]:
         ],
         "attendanceRecords": records,
         "photos": photos
-    }), 200
+    })
+    response.headers.add("Access-Control-Allow-Origin", "*")
+    return response, 200
