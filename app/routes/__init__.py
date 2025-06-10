@@ -11,6 +11,7 @@ from google.generativeai import types
 from flask_cors import CORS
 from sqlalchemy import func
 from sqlalchemy.sql import case
+from sqlalchemy.orm import joinedload
 import json
 import pickle
 import numpy as np
@@ -20,12 +21,19 @@ from insightface.app import FaceAnalysis
 import base64
 import cv2
 from app.recognition.insightface_loader import face_app, student_embeddings
+import google.generativeai as genai
+from typing import Union, Tuple
 
 # credentials certificate using pythondotenv
 from dotenv import load_dotenv
 load_dotenv()
 
 credentials_path = os.getenv("GOOGLE_APPLICATION_CREDENTIALS")
+
+genai.configure(api_key=os.getenv('GEMINI_API_KEY'))
+
+# Initialize the model
+model = genai.GenerativeModel('gemini-1.5-flash')
 
 
 # Initialize Firebase only once
@@ -164,35 +172,41 @@ def get_lecturer_dashboard():
         "courses": course_data
     })
 
-
 # gemini  interaction
 def query_gemini(query):
+    import re
     api_key = os.getenv("GEMINI_API_KEY")
     gemini_url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={api_key}"
 
     payload = {
-    "contents": [
-        {
-            "role": "user",
-            "parts": [
-                {"text": query}
-            ]
+        "contents": [
+            {
+                "role": "user",
+                "parts": [{"text": query}]
+            }
+        ],
+        "generationConfig": {
+            "maxOutputTokens": 100,
+            "responseMimeType": "text/plain"
+        },
+        "systemInstruction": {
+            "parts": [{
+                "text": (
+                    "Route all requests to either: \ncommands: (\n"
+                    "\"create attendance\": {\"type\": \"navigation\", \"label\": \"Create Attendance Page\", \"route\": \"/create-attendance\"},\n"
+                    "\"view attendance\": {\"type\": \"navigation\", \"label\": \"View Attendance\", \"route\": \"/attendance/view\"},\n"
+                    "\"add new student\": {\"type\": \"navigation\", \"label\": \"Add New Student\", \"route\": \"/add-student\"},\n"
+                    "\"view students\": {\"type\": \"navigation\", \"label\": \"View Students\", \"route\": \"/students\"},\n"
+                    "\"view courses\": {\"type\": \"navigation\", \"label\": \"View Courses\", \"route\": \"/courses\"}\n"
+                    ")\n\n"
+                    "Return response in two-part JSON:\n{\n  \"uiRespond\": (short simple message confirming),\n  \"backendRespond\": (command title)\n}\n\n"
+                    "If user request does not fit any of the commands, return a simple message and code [NO_VALID_REQUEST].\n"
+                    "IMPORTANT: Do NOT format output as markdown. Return raw JSON only.\n"
+                    "IMPORTANT: Only respond in English."
+                )
+            }]
         }
-    ],
-    "generationConfig": {
-        "maxOutputTokens": 100,
-        "responseMimeType": "text/plain"
-    },
-    "systemInstruction": {
-    "parts": [
-        {
-        "text": "Route all requests to either: \ncommands: (\n\"create attendance\": {\"type\": \"navigation\", \"label\": \"Create Attendance Page\", \"route\": \"/create-attendance\"},\n\"view attendance\": {\"type\": \"navigation\", \"label\": \"View Attendance\", \"route\": \"/attendance/view\"},\n\"add new student\": {\"type\": \"navigation\", \"label\": \"Add New Student\", \"route\": \"/add-student\"},\n\"view students\": {\"type\": \"navigation\", \"label\": \"View Students\", \"route\": \"/students\"},\n\"view courses\": {\"type\": \"navigation\", \"label\": \"View Courses\", \"route\": \"/courses\"}\n)\n\nReturn response in two-part JSON:\n{\n  \"uiRespond\": (short simple message confirming),\n  \"backendRespond\": (command title)\n}\n\nIf user request does not fit any of the commands, return a simple message and code [NO_VALID_REQUEST].\n\nIMPORTANT: only respond in English."
-        }
-    ]
     }
-
-    }
-
 
     headers = {
         "Content-Type": "application/json"
@@ -202,14 +216,20 @@ def query_gemini(query):
         response = requests.post(gemini_url, json=payload, headers=headers)
         response.raise_for_status()
         data = response.json()
+
         text = data["candidates"][0]["content"]["parts"][0]["text"]
+
+        # Strip markdown code blocks if wrapped in ```json
+        match = re.search(r"```json\s*(\{.*?\})\s*```", text, re.DOTALL)
+        if match:
+            text = match.group(1).strip()
 
         try:
             parsed = json.loads(text)
             return {
                 "type": "llm-response",
-                "uiRespond": parsed.get("uiRespond",""),
-                "backendRespond": parsed.get("backendRespond","")
+                "uiRespond": parsed.get("uiRespond", ""),
+                "backendRespond": parsed.get("backendRespond", "")
             }
         except json.JSONDecodeError:
             return {
@@ -217,11 +237,13 @@ def query_gemini(query):
                 "uiRespond": text,
                 "backendRespond": ""
             }
+
     except Exception as e:
         return {
             "type": "llm-error",
             "label": f"LLM Error: {str(e)}"
         }
+
 
 @api.route("/api/search", methods=["GET", "OPTIONS"])
 def search():
@@ -241,15 +263,17 @@ def search():
 
     lecturer = Lecturer.query.filter_by(email=lecturer_email).first()
     if not lecturer:
+        print("Lecturer not found:", lecturer_email)
         return jsonify([])
 
     query = request.args.get("q", "").strip().lower()
+    print("Query received:", query)
+
     if not query:
         return jsonify([])
 
     results = []
 
-    # --- Command routing ---
     command_map = {
         "create attendance": {"type": "navigation", "label": "Create Attendance Page", "route": "/create-attendance"},
         "view attendance": {"type": "navigation", "label": "View Attendance", "route": "/attendance/view"},
@@ -258,11 +282,12 @@ def search():
         "view courses": {"type": "navigation", "label": "View Courses", "route": "/courses"},
     }
 
+    # Match commands
     for cmd, val in command_map.items():
         if query in cmd.lower():
             results.append(val)
 
-    # --- Course Search ---
+    # Match course names
     courses = [course for course in lecturer.courses if query in course.name.lower()]
     results.extend([
         {
@@ -274,7 +299,7 @@ def search():
         for course in courses
     ])
 
-    # --- Fallback to LLM if no results found ---
+    # Fallback to LLM
     if not results:
         llm_result = query_gemini(query)
         if llm_result["type"] == "llm-response":
@@ -290,11 +315,15 @@ def search():
         else:
             return jsonify(results if isinstance(results, list) else [results])
 
+    print("Search results:", results)
+
     response = jsonify(results)
     response.headers.add('Access-Control-Allow-Origin', '*')
     response.headers.add('Access-Control-Allow-Headers', 'Content-Type, Authorization')
     response.headers.add("Access-Control-Allow-Methods", "GET, OPTIONS")
     return response
+
+
 
 @api.route("/api/course/<int:course_id>/dashboard", methods=["GET"])
 def get_course_dashboard(course_id):
@@ -585,3 +614,146 @@ def lecturer_attendance_performance():
         "sessions": sessions,
         "sessionId": session.session_id,
     })
+
+@api.route("/api/chat", methods=["POST", "OPTIONS"])
+def gemini_chat():
+    if request.method == "OPTIONS":
+        response = jsonify({"message": "OK"})
+        response.headers.add("Access-Control-Allow-Origin", "*")
+        response.headers.add("Access-Control-Allow-Headers", "Content-Type, Authorization")
+        response.headers.add("Access-Control-Allow-Methods", "POST, OPTIONS")
+        return response
+    
+    try:
+        # Get JSON data from request
+        data = request.get_json()
+        
+        if not data:
+            return jsonify({"error": "No data provided"}), 400
+        
+        message = data.get("message")
+        if not message:
+            return jsonify({"error": "Message is required"}), 400
+        
+        # Optional: Get conversation history for context
+        history = data.get("history", [])
+        
+        # Prepare the prompt with history if provided
+        if history:
+            # Build context from history
+            context_messages = []
+            for msg in history[-10:]:  # Last 10 messages for context
+                role = "Human" if msg.get("role") == "user" else "Assistant" 
+                context_messages.append(f"{role}: {msg.get('content', '')}")
+            
+            full_prompt = "\n".join(context_messages) + f"\nHuman: {message}\nAssistant:"
+        else:
+            full_prompt = message
+        
+        # Generate response from Gemini
+        response = model.generate_content(full_prompt)
+        
+        if not response.text:
+            return jsonify({"error": "No response generated"}), 500
+        
+        return jsonify({
+            "success": True,
+            "response": response.text,
+            "message": "Response generated successfully"
+        }), 200
+        
+    except Exception as e:
+        return jsonify({
+            "error": "Failed to generate response",
+            "details": str(e)
+        }), 500
+    
+@api.route("/api/student-details/<int:student_id>", methods=["GET", "OPTIONS"])
+def get_student_details(student_id: int) -> Union[Tuple[dict, int], dict]:
+    if request.method == "OPTIONS":
+        response = jsonify({"message": "OK"})
+        response.headers.add("Access-Control-Allow-Origin", "*")
+        response.headers.add("Access-Control-Allow-Headers", "Content-Type, Authorization")
+        response.headers.add("Access-Control-Allow-Methods", "GET, OPTIONS")
+        return response
+
+    # Validate student_id
+    if student_id <= 0:
+        return jsonify({"error": "Invalid student ID"}), 400
+
+    # Authenticate lecturer
+    id_token = request.headers.get("Authorization", "").replace("Bearer ", "")
+    try:
+        decoded_token = firebase_auth.verify_id_token(id_token, clock_skew_seconds=60)
+        lecturer_email = decoded_token.get("email")
+        if not lecturer_email:
+            return jsonify({"error": "Unauthorized", "details": "Email not found in token"}), 401
+    except firebase_auth.ExpiredIdTokenError:
+        return jsonify({"error": "Unauthorized", "details": "Token has expired"}), 401
+    except firebase_auth.InvalidIdTokenError:
+        return jsonify({"error": "Unauthorized", "details": "Invalid token"}), 401
+    except Exception as e:
+        return jsonify({"error": "Unauthorized", "details": str(e)}), 401
+
+    # Fetch lecturer
+    lecturer = Lecturer.query.filter_by(email=lecturer_email).first()
+    if not lecturer:
+        return jsonify({"error": "Lecturer not found"}), 404
+
+    # Fetch student with eager loading
+    try:
+        student = Student.query.options(
+            joinedload(Student.enrollments).joinedload(Enrollment.course),
+            joinedload(Student.photos)
+        ).get(student_id)
+        if not student:
+            return jsonify({"error": "Student not found"}), 404
+    except Exception as e:
+        return jsonify({"error": "Database error", "details": str(e)}), 500
+
+    # Authorization check: Ensure student is enrolled in a course taught by the lecturer
+    lecturer_course_ids = {course.course_id for course in lecturer.courses}
+    student_course_ids = {enrollment.course.course_id for enrollment in student.enrollments if enrollment.course}
+    if not lecturer_course_ids & student_course_ids:  # No intersection
+        return jsonify({"error": "Forbidden", "details": "No access to this student’s data"}), 403
+
+    # Fetch attendance records
+    attendance_records = Attendance.query.filter_by(student_id=student.student_id).all()
+
+    # Format attendance records
+    records = [
+        {
+            "courseId": record.course_id,
+            "sessionId": record.session_id,
+            "present": record.present,
+            "timestamp": record.timestamp.isoformat()
+        }
+        for record in attendance_records
+    ]
+
+    # Format student photos
+    photos = [
+        {
+            "photoId": photo.photo_id,
+            "filename": photo.filename,
+            "mimetype": photo.mimetype,
+            "capturedAt": photo.captured_at.isoformat(),
+            "imageData": photo.image_data.hex()  # Convert binary to hex string for JSON
+        }
+        for photo in student.photos
+    ]
+
+    return jsonify({
+        "studentId": student.student_id,
+        "name": student.name,
+        "courses": [
+            {
+                "courseId": enrollment.course.course_id,
+                "name": enrollment.course.name
+            }
+            for enrollment in student.enrollments
+            if enrollment.course
+        ],
+        "attendanceRecords": records,
+        "photos": photos
+    }), 200

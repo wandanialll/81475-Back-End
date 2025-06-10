@@ -12,6 +12,7 @@ class Student(db.Model):
     focus_indexes = db.relationship('FocusIndex', backref='student')
     chatbot_interactions = db.relationship('ChatbotInteraction', backref='student')
     attendance_records = db.relationship('Attendance', backref='student')
+    photos = db.relationship('StudentPhoto', backref='student')
 
 class StudentPhoto(db.Model):
     __tablename__ = 'student_photos'

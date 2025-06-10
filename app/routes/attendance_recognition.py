@@ -5,57 +5,110 @@ import base64
 from sklearn.metrics.pairwise import cosine_similarity
 from app.models import Attendance, db
 from app.recognition.insightface_loader import face_app, student_embeddings
+import logging
 
 attendance_recognition_bp = Blueprint("attendance_recognition", __name__)
-
-THRESHOLD = 0.5  # You can adjust this as needed
+THRESHOLD = 0.5
 
 def decode_image(base64_str):
-    img_data = base64.b64decode(base64_str.split(",")[1])
-    nparr = np.frombuffer(img_data, np.uint8)
-    return cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+    """Decode base64 image string to OpenCV format"""
+    try:
+        img_data = base64.b64decode(base64_str.split(",")[1])
+        nparr = np.frombuffer(img_data, np.uint8)
+        img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+        if img is None:
+            raise ValueError("Failed to decode image")
+        return img
+    except Exception as e:
+        logging.error(f"Image decoding error: {str(e)}")
+        raise
 
-# def find_best_match(embedding):
-#     best_id = None
-#     best_score = -1
-#     for sid, ref_emb in student_embeddings.items():
-#         score = cosine_similarity([embedding], [ref_emb])[0][0]
-#         if score > best_score:
-#             best_id = sid
-#             best_score = score
-#     return best_id, best_score
 def find_best_match(embedding, session_id):
-    # Get already accounted student IDs
-    accounted_ids = set(
-        a.student_id for a in Attendance.query.filter_by(session_id=session_id, present=True).all()
-    )
-
-    best_id = None
-    best_score = -1
-    for sid, ref_emb in student_embeddings.items():
-        if sid in accounted_ids:
-            continue  # Skip already marked students
-        score = cosine_similarity([embedding], [ref_emb])[0][0]
-        if score > best_score:
-            best_id = sid
-            best_score = score
-    return best_id, best_score
+    """Find best matching student embedding, excluding already marked students"""
+    try:
+        # Get already accounted student IDs
+        accounted_ids = set(
+            a.student_id for a in Attendance.query.filter_by(session_id=session_id, present=True).all()
+        )
+        
+        if not student_embeddings:
+            logging.warning("No student embeddings available")
+            return None, 0.0, False
+        
+        best_id = None
+        best_score = -1
+        is_first_recognition = False
+        
+        for sid, ref_emb in student_embeddings.items():
+            if sid in accounted_ids:
+                continue  # Skip already marked students
+            
+            try:
+                score = cosine_similarity([embedding], [ref_emb])[0][0]
+                if score > best_score:
+                    best_id = sid
+                    best_score = score
+                    is_first_recognition = True  # This will be the first time we see this student
+            except Exception as e:
+                logging.error(f"Error computing similarity for student {sid}: {str(e)}")
+                continue
+        
+        return best_id, best_score, is_first_recognition
+    except Exception as e:
+        logging.error(f"Error in find_best_match: {str(e)}")
+        return None, 0.0, False
 
 def mark_attendance(student_id, session_id):
-    existing = Attendance.query.filter_by(student_id=student_id, session_id=session_id).first()
-    if not existing:
-        record = Attendance(
-            student_id=student_id,
-            session_id=session_id,
-            present=True
-        )
-        db.session.add(record)
-    else:
-        existing.present = True
-    db.session.commit()
+    """Mark attendance for a student in a session"""
+    try:
+        existing = Attendance.query.filter_by(student_id=student_id, session_id=session_id).first()
+        if not existing:
+            record = Attendance(
+                student_id=student_id,
+                session_id=session_id,
+                present=True
+            )
+            db.session.add(record)
+        else:
+            existing.present = True
+        
+        db.session.commit()
+        return True
+    except Exception as e:
+        logging.error(f"Error marking attendance for student {student_id}: {str(e)}")
+        db.session.rollback()
+        return False
+
+def extract_face_image(img, bbox):
+    """Extract and encode face crop from image"""
+    try:
+        x1, y1, x2, y2 = [int(i) for i in bbox]
+        
+        # Validate bbox coordinates
+        h, w = img.shape[:2]
+        x1, y1 = max(0, x1), max(0, y1)
+        x2, y2 = min(w, x2), min(h, y2)
+        
+        if x2 <= x1 or y2 <= y1:
+            raise ValueError("Invalid bounding box coordinates")
+        
+        face_crop = img[y1:y2, x1:x2]
+        success, buffer = cv2.imencode(".jpg", face_crop)
+        
+        if not success:
+            raise ValueError("Failed to encode face image")
+        
+        face_base64 = base64.b64encode(buffer).decode("utf-8")
+        return f"data:image/jpeg;base64,{face_base64}"
+    except Exception as e:
+        logging.error(f"Error extracting face image: {str(e)}")
+        return None
 
 @attendance_recognition_bp.route("/api/attendance/mark-by-face", methods=["POST", "OPTIONS"])
 def mark_by_face():
+    """Main endpoint for facial recognition attendance marking"""
+    
+    # Handle CORS preflight
     if request.method == "OPTIONS":
         response = jsonify({"message": "OK"})
         response.headers.add("Access-Control-Allow-Origin", "*")
@@ -63,49 +116,108 @@ def mark_by_face():
         response.headers.add("Access-Control-Allow-Methods", "POST, OPTIONS")
         return response
     
-    data = request.json
-    session_id = data.get("session_id")
-    reset = data.get("reset", False)
-
-    if reset:
-        Attendance.query.filter_by(session_id=session_id).update({Attendance.present: False})
-        db.session.commit()
-
-    img = decode_image(data.get("image"))
-
-    faces = face_app.get(img)
-    if not faces:
-        return jsonify({"status": "no_faces_detected", "allAccounted": False}), 200
-
-    results = []
-    image_sent = False
-
-    for face in faces:
-        emb = face.embedding
-        matched_id, score = find_best_match(emb, session_id)
-        if score >= THRESHOLD:
-            
-            x1, y1, x2, y2 = [int(i) for i in face.bbox]
-            face_crop = img[y1:y2, x1:x2]
-
-            # encode as base64
-            _, buffer = cv2.imencode(".jpg", face_crop)
-            face_base64 = base64.b64encode(buffer).decode("utf-8")
-            face_data_url = f"data:image/jpeg;base64,{face_base64}"
-
-            mark_attendance(matched_id, session_id)
-            results.append({"student_id": matched_id, "score": float(score) , "face": face_data_url})
-    
-    total_students = (
-        db.session.query(Attendance).filter_by(session_id=session_id)
-        .distinct(Attendance.student_id).count()
-    )
-
-    total_present = (
-        db.session.query(Attendance).filter_by(session_id=session_id, present=True)
-        .distinct(Attendance.student_id).count()
-    )
-
-    all_accounted = total_present == total_students
-
-    return jsonify({"status": "ok", "matches": results, "allAccounted": all_accounted}), 200
+    try:
+        # Validate request data
+        if not request.json:
+            return jsonify({"error": "No JSON data provided"}), 400
+        
+        data = request.json
+        session_id = data.get("session_id")
+        reset = data.get("reset", False)
+        image_data = data.get("image")
+        
+        if not session_id:
+            return jsonify({"error": "session_id is required"}), 400
+        
+        if not image_data:
+            return jsonify({"error": "image data is required"}), 400
+        
+        # Handle reset functionality
+        if reset:
+            try:
+                Attendance.query.filter_by(session_id=session_id).update({Attendance.present: False})
+                db.session.commit()
+                logging.info(f"Reset attendance for session {session_id}")
+            except Exception as e:
+                logging.error(f"Error resetting attendance: {str(e)}")
+                db.session.rollback()
+                return jsonify({"error": "Failed to reset attendance"}), 500
+        
+        # Decode and process image
+        try:
+            img = decode_image(image_data)
+        except Exception as e:
+            return jsonify({"error": "Invalid image data"}), 400
+        
+        # Detect faces
+        try:
+            faces = face_app.get(img)
+        except Exception as e:
+            logging.error(f"Face detection error: {str(e)}")
+            return jsonify({"error": "Face detection failed"}), 500
+        
+        if not faces:
+            return jsonify({"status": "no_faces_detected", "allAccounted": False}), 200
+        
+        # Process detected faces
+        results = []
+        for i, face in enumerate(faces):
+            try:
+                emb = face.embedding
+                matched_id, score, is_first_recognition = find_best_match(emb, session_id)
+                
+                # Only process if this is a new recognition above threshold
+                if matched_id and score >= THRESHOLD and is_first_recognition:
+                    result = {
+                        "student_id": matched_id,
+                        "score": float(score)
+                    }
+                    
+                    # Extract face image for first recognition
+                    face_data_url = extract_face_image(img, face.bbox)
+                    if face_data_url:
+                        result["face"] = face_data_url
+                    
+                    # Mark attendance
+                    if mark_attendance(matched_id, session_id):
+                        results.append(result)
+                        logging.info(f"First recognition - Marked attendance for student {matched_id} with score {score:.3f}")
+                    else:
+                        logging.error(f"Failed to mark attendance for student {matched_id}")
+                elif matched_id and score >= THRESHOLD:
+                    # Student already recognized, skip silently
+                    logging.debug(f"Student {matched_id} already recognized, skipping (score: {score:.3f})")
+                
+            except Exception as e:
+                logging.error(f"Error processing face {i}: {str(e)}")
+                continue
+        
+        # Calculate attendance statistics
+        try:
+            total_students = (
+                db.session.query(Attendance).filter_by(session_id=session_id)
+                .distinct(Attendance.student_id).count()
+            )
+            total_present = (
+                db.session.query(Attendance).filter_by(session_id=session_id, present=True)
+                .distinct(Attendance.student_id).count()
+            )
+            all_accounted = total_present == total_students and total_students > 0
+        except Exception as e:
+            logging.error(f"Error calculating attendance stats: {str(e)}")
+            total_students = total_present = 0
+            all_accounted = False
+        
+        return jsonify({
+            "status": "ok",
+            "matches": results,
+            "allAccounted": all_accounted,
+            "stats": {
+                "total_students": total_students,
+                "total_present": total_present
+            }
+        }), 200
+        
+    except Exception as e:
+        logging.error(f"Unexpected error in mark_by_face: {str(e)}")
+        return jsonify({"error": "Internal server error"}), 500
