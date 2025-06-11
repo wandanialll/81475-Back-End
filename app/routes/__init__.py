@@ -41,8 +41,11 @@ cred = credentials.Certificate(credentials_path)
 firebase_admin.initialize_app(cred)
 
 api = Blueprint('api', __name__)
+
   # Allow all origins (change to specific origin in production)
 CORS(api, resources={r"/api/*": {"origins": "*"}})
+
+
 
 # Handle the OPTIONS request manually for preflight
 @api.route('/api/lecturer/courses', methods=["OPTIONS"])
@@ -679,32 +682,28 @@ def gemini_chat():
         response.headers.add("Access-Control-Allow-Origin", "*")
         return response, 500
 
-@api.route("/api/student-details/<int:student_id>", methods=["GET", "OPTIONS"])
-def get_student_details(student_id: int):
-    if request.method == "OPTIONS":
-        response = jsonify({"message": "OK"})
-        response.headers.add("Access-Control-Allow-Origin", "*")
-        response.headers.add("Access-Control-Allow-Headers", "Content-Type, Authorization")
-        response.headers.add("Access-Control-Allow-Methods", "GET, OPTIONS")
-        return response
+# Handle the OPTIONS request manually for preflight (like your working endpoints)
+@api.route('/api/student-details/<int:student_id>', methods=["OPTIONS"])
+def options_student_details(student_id):
+    response = jsonify({"message": "OK"})
+    response.headers.add('Access-Control-Allow-Origin', '*')
+    response.headers.add('Access-Control-Allow-Headers', 'Content-Type, Authorization')
+    response.headers.add('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS')
+    return response
 
-    # Validate student_id
-    if student_id <= 0:
-        return jsonify({"error": "Invalid student ID"}), 400
-
+@api.route("/api/student-details/<int:student_id>", methods=["GET"])
+def get_student_details(student_id):
     # Authenticate lecturer
     id_token = request.headers.get("Authorization", "").replace("Bearer ", "")
     try:
         decoded_token = firebase_auth.verify_id_token(id_token, clock_skew_seconds=60)
-        lecturer_email = decoded_token.get("email")
-        if not lecturer_email:
-            return jsonify({"error": "Unauthorized", "details": "Email not found in token"}), 401
-    except firebase_auth.ExpiredIdTokenError:
-        return jsonify({"error": "Unauthorized", "details": "Token has expired"}), 401
-    except firebase_auth.InvalidIdTokenError:
-        return jsonify({"error": "Unauthorized", "details": "Invalid token"}), 401
+        lecturer_email = decoded_token["email"]
     except Exception as e:
         return jsonify({"error": "Unauthorized", "details": str(e)}), 401
+
+    # Validate student_id
+    if student_id <= 0:
+        return jsonify({"error": "Invalid student ID"}), 400
 
     # Fetch lecturer
     lecturer = Lecturer.query.filter_by(email=lecturer_email).first()
@@ -725,7 +724,7 @@ def get_student_details(student_id: int):
     # Authorization check: Ensure student is enrolled in a course taught by the lecturer
     lecturer_course_ids = {course.course_id for course in lecturer.courses}
     student_course_ids = {enrollment.course.course_id for enrollment in student.enrollments if enrollment.course}
-    if not lecturer_course_ids & student_course_ids:  # No intersection
+    if not lecturer_course_ids & student_course_ids:
         return jsonify({"error": "Forbidden", "details": "No access to this student's data"}), 403
 
     # Fetch attendance records
@@ -749,12 +748,12 @@ def get_student_details(student_id: int):
             "filename": photo.filename,
             "mimetype": photo.mimetype,
             "capturedAt": photo.captured_at.isoformat(),
-            "imageData": photo.image_data.hex()  # Convert binary to hex string for JSON
+            "imageData": photo.image_data.hex()
         }
         for photo in student.photos
     ]
 
-    # Create response and add CORS headers (like your other endpoints)
+    # Create response data
     response_data = {
         "studentId": student.student_id,
         "name": student.name,
@@ -769,12 +768,111 @@ def get_student_details(student_id: int):
         "attendanceRecords": records,
         "photos": photos
     }
-    
+
+    # Explicitly add CORS headers in the response (like your working endpoints)
     response = jsonify(response_data)
-    response.headers.add("Access-Control-Allow-Origin", "*")
-    response.headers.add("Access-Control-Allow-Headers", "Content-Type, Authorization")
-    response.headers.add("Access-Control-Allow-Methods", "GET, OPTIONS")
+    response.headers.add('Access-Control-Allow-Origin', '*')
+    response.headers.add('Access-Control-Allow-Headers', 'Content-Type, Authorization')
+    response.headers.add('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS')
+
     return response
+
+# @api.route("/api/student-details/<int:student_id>", methods=["GET", "OPTIONS"])
+# def get_student_details(student_id: int):
+#     if request.method == "OPTIONS":
+#         response = jsonify({"message": "OK"})
+#         response.headers.add("Access-Control-Allow-Origin", "*")
+#         response.headers.add("Access-Control-Allow-Headers", "Content-Type, Authorization")
+#         response.headers.add("Access-Control-Allow-Methods", "GET, OPTIONS")
+#         return response
+
+#     # Validate student_id
+#     if student_id <= 0:
+#         return jsonify({"error": "Invalid student ID"}), 400
+
+#     # Authenticate lecturer
+#     id_token = request.headers.get("Authorization", "").replace("Bearer ", "")
+#     try:
+#         decoded_token = firebase_auth.verify_id_token(id_token, clock_skew_seconds=60)
+#         lecturer_email = decoded_token.get("email")
+#         if not lecturer_email:
+#             return jsonify({"error": "Unauthorized", "details": "Email not found in token"}), 401
+#     except firebase_auth.ExpiredIdTokenError:
+#         return jsonify({"error": "Unauthorized", "details": "Token has expired"}), 401
+#     except firebase_auth.InvalidIdTokenError:
+#         return jsonify({"error": "Unauthorized", "details": "Invalid token"}), 401
+#     except Exception as e:
+#         return jsonify({"error": "Unauthorized", "details": str(e)}), 401
+
+#     # Fetch lecturer
+#     lecturer = Lecturer.query.filter_by(email=lecturer_email).first()
+#     if not lecturer:
+#         return jsonify({"error": "Lecturer not found"}), 404
+
+#     # Fetch student with eager loading
+#     try:
+#         student = Student.query.options(
+#             joinedload(Student.enrollments).joinedload(Enrollment.course),
+#             joinedload(Student.photos)
+#         ).get(student_id)
+#         if not student:
+#             return jsonify({"error": "Student not found"}), 404
+#     except Exception as e:
+#         return jsonify({"error": "Database error", "details": str(e)}), 500
+
+#     # Authorization check: Ensure student is enrolled in a course taught by the lecturer
+#     lecturer_course_ids = {course.course_id for course in lecturer.courses}
+#     student_course_ids = {enrollment.course.course_id for enrollment in student.enrollments if enrollment.course}
+#     if not lecturer_course_ids & student_course_ids:  # No intersection
+#         return jsonify({"error": "Forbidden", "details": "No access to this student's data"}), 403
+
+#     # Fetch attendance records
+#     attendance_records = Attendance.query.filter_by(student_id=student.student_id).all()
+
+#     # Format attendance records
+#     records = [
+#         {
+#             "courseId": record.course_id,
+#             "sessionId": record.session_id,
+#             "present": record.present,
+#             "timestamp": record.timestamp.isoformat()
+#         }
+#         for record in attendance_records
+#     ]
+
+#     # Format student photos
+#     photos = [
+#         {
+#             "photoId": photo.photo_id,
+#             "filename": photo.filename,
+#             "mimetype": photo.mimetype,
+#             "capturedAt": photo.captured_at.isoformat(),
+#             "imageData": photo.image_data.hex()  # Convert binary to hex string for JSON
+#         }
+#         for photo in student.photos
+#     ]
+
+#     # Create response and add CORS headers (like your other endpoints)
+#     response_data = {
+#         "studentId": student.student_id,
+#         "name": student.name,
+#         "courses": [
+#             {
+#                 "courseId": enrollment.course.course_id,
+#                 "name": enrollment.course.name
+#             }
+#             for enrollment in student.enrollments
+#             if enrollment.course
+#         ],
+#         "attendanceRecords": records,
+#         "photos": photos
+#     }
+    
+#     response = jsonify(response_data)
+#     response.headers.add("Access-Control-Allow-Origin", "*")
+#     response.headers.add("Access-Control-Allow-Headers", "Content-Type, Authorization")
+#     response.headers.add("Access-Control-Allow-Methods", "GET, OPTIONS")
+#     return response
 
 # @api.route("/api/student-details/<int:student_id>", methods=["GET", "OPTIONS"])
 # def get_student_details(student_id: int):

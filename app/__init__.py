@@ -13,6 +13,13 @@ def create_app():
     app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
     app.register_blueprint(api)
     app.register_blueprint(attendance_recognition_bp)
+    print(f"Registered blueprints: {[bp.name for bp in app.blueprints.values()]}")
+    print("=== REGISTERED ROUTES ===")
+    for rule in app.url_map.iter_rules():
+        methods = ','.join(rule.methods)
+        print(f"{rule.rule} -> {rule.endpoint} [{methods}]")
+    print("========================")
+    
 
 
     db.init_app(app)
@@ -24,3 +31,5 @@ def create_app():
         db.create_all()
 
     return app
+
+
