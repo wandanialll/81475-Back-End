@@ -42,6 +42,7 @@ firebase_admin.initialize_app(cred)
 
 api = Blueprint('api', __name__)
   # Allow all origins (change to specific origin in production)
+CORS(api, resources={r"/api/*": {"origins": "*"}})
 
 # Handle the OPTIONS request manually for preflight
 @api.route('/api/lecturer/courses', methods=["OPTIONS"])
