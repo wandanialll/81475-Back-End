@@ -683,3 +683,4 @@ def get_student_details(student_id: int):
     
     response = jsonify(response_data)
     return add_cors_headers(response), 200
+
