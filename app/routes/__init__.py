@@ -489,6 +489,12 @@ def enroll_student():
     student_id = request.form.get("student_id", type=int)
     name = request.form.get("name")
     photos = request.files.getlist("photo")
+
+    print("===== DEBUG ENROLL REQUEST =====")
+    print("Request.form:", request.form)
+    print("Request.files:", request.files)
+    print("Request.values:", request.values)
+    print("student_id:", request.form.get("student_id"))
     
     if not student_id:
         return jsonify({"error": "Student ID is required"}), 400
