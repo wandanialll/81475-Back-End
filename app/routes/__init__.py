@@ -486,16 +486,23 @@ def enroll_student():
     if request.method == "OPTIONS":
         return handle_preflight()
     
+    student_id = request.form.get("student_id", type=int)
     name = request.form.get("name")
     photos = request.files.getlist("photo")
     
+    if not student_id:
+        return jsonify({"error": "Student ID is required"}), 400
     if not name:
         return jsonify({"error": "Name is required"}), 400
     if len(photos) != 3:
         return jsonify({"error": "Exactly 3 photos are required"}), 400
+
+    # Check if student_id already exists
+    if Student.query.get(student_id):
+        return jsonify({"error": "Student ID already exists"}), 400
     
     # Create student
-    new_student = Student(name=name)
+    new_student = Student(student_id=student_id, name=name)
     db.session.add(new_student)
     db.session.commit()
     
@@ -503,7 +510,7 @@ def enroll_student():
     for idx, photo in enumerate(photos, start=1):
         filename = secure_filename(f"{name}_{idx}.jpg")
         new_photo = StudentPhoto(
-            student_id=new_student.student_id,
+            student_id=student_id,
             image_data=photo.read(),
             filename=filename,
             mimetype=photo.mimetype
@@ -515,9 +522,10 @@ def enroll_student():
     return jsonify({
         "success": True,
         "message": "Enrollment successful",
-        "student_id": new_student.student_id,
+        "student_id": student_id,
         "photos_saved": 3
     }), 200
+
 
 @api.route("/api/photo/<int:photo_id>")
 def serve_photo(photo_id: int):

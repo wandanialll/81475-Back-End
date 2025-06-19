@@ -3,12 +3,38 @@ import numpy as np
 import cv2
 import base64
 from sklearn.metrics.pairwise import cosine_similarity
-from app.models import Attendance, db
+from app.models import Attendance, Lecturer, db
 from app.recognition.insightface_loader import face_app, student_embeddings
 import logging
+from firebase_admin import auth as firebase_auth
 
 attendance_recognition_bp = Blueprint("attendance_recognition", __name__)
 THRESHOLD = 0.5
+# Set up logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+def authenticate_lecturer(id_token):
+    try:
+        decoded_token = firebase_auth.verify_id_token(id_token, clock_skew_seconds=60)
+        lecturer_email = decoded_token.get("email")
+        
+        if not lecturer_email:
+            return {"error": "Unauthorized", "details": "Email not found in token"}, 401
+            
+        lecturer = Lecturer.query.filter_by(email=lecturer_email).first()
+        if not lecturer:
+            return {"error": "Lecturer not found"}, 404
+            
+        return lecturer
+    
+    except firebase_auth.ExpiredIdTokenError:
+        return {"error": "Unauthorized", "details": "Token has expired"}, 401
+    except firebase_auth.InvalidIdTokenError:
+        return {"error": "Unauthorized", "details": "Invalid token"}, 401
+    except Exception as e:
+        return {"error": "Unauthorized", "details": str(e)}, 401
+    
 
 def decode_image(base64_str):
     """Decode base64 image string to OpenCV format"""
@@ -221,3 +247,32 @@ def mark_by_face():
     except Exception as e:
         logging.error(f"Unexpected error in mark_by_face: {str(e)}")
         return jsonify({"error": "Internal server error"}), 500
+    
+# @attendance_recognition_bp.route("/api/attendance/close-sheet/<session_id>", methods=["POST", "OPTIONS"])
+# def close_sheet(session_id):
+#     if request.method == "OPTIONS":
+#         return jsonify({"message": "OK"}), 200, {
+#             "Access-Control-Allow-Origin": "*",
+#             "Access-Control-Allow-Headers": "Content-Type, Authorization",
+#             "Access-Control-Allow-Methods": "POST, OPTIONS"
+#         }
+
+#     try:
+#         id_token = request.headers.get('Authorization', '').replace('Bearer ', '')
+#         lecturer = authenticate_lecturer(id_token)
+#         if isinstance(lecturer, tuple):
+#             return jsonify(lecturer[0]), lecturer[1]
+
+#         session = Attendance.query.filter_by(session_id=session_id).first()
+#         if not session:
+#             return jsonify({"error": "Session not found"}), 404
+#         session.closed = True
+#         session.session_ended_at = db.func.now()
+#         db.session.commit()
+
+#         calculate_focus_index.delay(session.attendance_id)
+#         logger.info(f"Closed session {session_id}, queued focus index calculation")
+#         return jsonify({"message": "Session closed, focus index calculation queued"}), 200
+#     except Exception as e:
+#         logger.error(f"Error in close_sheet: {str(e)}")
+#         return jsonify({"error": "Internal server error"}), 500

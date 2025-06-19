@@ -3,7 +3,7 @@ from datetime import datetime
 
 class Student(db.Model):
     __tablename__ = 'students'
-    student_id = db.Column(db.Integer, primary_key=True)
+    student_id = db.Column(db.Integer, primary_key=True, autoincrement=False)
     name = db.Column(db.String, nullable=False)
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
 
@@ -23,7 +23,6 @@ class StudentPhoto(db.Model):
     mimetype = db.Column(db.String, nullable=False)
     captured_at = db.Column(db.DateTime, default=datetime.utcnow)
 
-
 class Course(db.Model):
     __tablename__ = 'courses'
     course_id = db.Column(db.Integer, primary_key=True)
@@ -33,21 +32,18 @@ class Course(db.Model):
     enrollments = db.relationship('Enrollment', backref='course')
     attendance_records = db.relationship('Attendance', backref='course')
 
-
 class Enrollment(db.Model):
     __tablename__ = 'enrollments'
     enrollment_id = db.Column(db.Integer, primary_key=True)
     student_id = db.Column(db.Integer, db.ForeignKey('students.student_id'))
     course_id = db.Column(db.Integer, db.ForeignKey('courses.course_id'))
 
-
 class PoseSnapshot(db.Model):
     __tablename__ = 'pose_snapshots'
     pose_id = db.Column(db.Integer, primary_key=True)
     student_id = db.Column(db.Integer, db.ForeignKey('students.student_id'))
     captured_at = db.Column(db.DateTime, default=datetime.utcnow)
-    data_path = db.Column(db.String, nullable=False)  # Link to file (CSV/JSON/etc)
-
+    data_path = db.Column(db.String, nullable=False)
 
 class FocusIndex(db.Model):
     __tablename__ = 'focus_indexes'
@@ -56,15 +52,13 @@ class FocusIndex(db.Model):
     timestamp = db.Column(db.DateTime, default=datetime.utcnow)
     score = db.Column(db.Float, nullable=False)
 
-
 class ChatbotInteraction(db.Model):
     __tablename__ = 'chatbot_interactions'
     interaction_id = db.Column(db.Integer, primary_key=True)
     student_id = db.Column(db.Integer, db.ForeignKey('students.student_id'))
     timestamp = db.Column(db.DateTime, default=datetime.utcnow)
     message = db.Column(db.Text, nullable=False)
-    sender = db.Column(db.String, nullable=False)  # 'student' or 'bot'
-
+    sender = db.Column(db.String, nullable=False)
 
 class Attendance(db.Model):
     __tablename__ = 'attendance'
@@ -85,3 +79,21 @@ class Lecturer(db.Model):
     email = db.Column(db.String, nullable=False, unique=True)
 
     courses = db.relationship('Course', backref='lecturer')
+
+class FocusSessions(db.Model):
+    __tablename__ = 'focus_sessions'
+    id = db.Column(db.Integer, primary_key=True)
+    attendance_id = db.Column(db.Integer, db.ForeignKey('attendance.attendance_id', ondelete='CASCADE'), nullable=False)
+    student_id = db.Column(db.String, nullable=True)
+    focus_index = db.Column(db.Float, nullable=True)
+    timestamp = db.Column(db.DateTime, server_default=db.func.now())
+    closed = db.Column(db.Boolean, default=False)
+
+class FocusLabels(db.Model):
+    __tablename__ = 'focus_labels'
+    id = db.Column(db.Integer, primary_key=True)
+    attendance_id = db.Column(db.Integer, db.ForeignKey('attendance.attendance_id', ondelete='CASCADE'), nullable=False)
+    student_id = db.Column(db.String, nullable=True)
+    frame_id = db.Column(db.String, nullable=True)
+    label = db.Column(db.String, nullable=False)
+    timestamp = db.Column(db.DateTime, server_default=db.func.now())
