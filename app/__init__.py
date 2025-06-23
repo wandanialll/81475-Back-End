@@ -5,6 +5,7 @@ from dotenv import load_dotenv
 import os
 from .routes import api
 from .routes.attendance_recognition import attendance_recognition_bp
+from .routes.pose_focus_recognition import pose_focus_recognition_bp
 from flask import jsonify
 from celery import Celery
 from .celery_utils import make_celery
@@ -24,6 +25,7 @@ def create_app():
     app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
     app.register_blueprint(api)
     app.register_blueprint(attendance_recognition_bp)
+    app.register_blueprint(pose_focus_recognition_bp)
     print(f"Registered blueprints: {[bp.name for bp in app.blueprints.values()]}")
     print("=== REGISTERED ROUTES ===")
     for rule in app.url_map.iter_rules():

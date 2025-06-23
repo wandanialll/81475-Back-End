@@ -23,6 +23,15 @@ class StudentPhoto(db.Model):
     mimetype = db.Column(db.String, nullable=False)
     captured_at = db.Column(db.DateTime, default=datetime.utcnow)
 
+class FaceEmbedding(db.Model):
+    __tablename__ = 'face_embeddings'
+    embedding_id = db.Column(db.Integer, primary_key=True)
+    student_id = db.Column(db.Integer, db.ForeignKey('students.student_id'), nullable=False, unique=True)
+    embedding = db.Column(db.PickleType, nullable=False)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+
+    student = db.relationship('Student', backref=db.backref('face_embedding', uselist=False))
+
 class Course(db.Model):
     __tablename__ = 'courses'
     course_id = db.Column(db.Integer, primary_key=True)
@@ -97,3 +106,23 @@ class FocusLabels(db.Model):
     frame_id = db.Column(db.String, nullable=True)
     label = db.Column(db.String, nullable=False)
     timestamp = db.Column(db.DateTime, server_default=db.func.now())
+
+class PoseData(db.Model):
+    __tablename__ = 'pose_data'
+    id = db.Column(db.Integer, primary_key=True)
+    session_id = db.Column(db.String, nullable=False)
+    person_id = db.Column(db.Integer, nullable=False)
+    keypoints = db.Column(db.JSON, nullable=False)
+    angles = db.Column(db.JSON, nullable=False)
+    rel_coords = db.Column(db.JSON, nullable=False)
+    norm_coords = db.Column(db.JSON, nullable=False)
+    rel_angles = db.Column(db.JSON, nullable=False)
+    norm_angles = db.Column(db.JSON, nullable=False)
+    timestamp = db.Column(db.DateTime, default=datetime.utcnow)
+
+class PoseFocusIndex(db.Model):
+    __tablename__ = 'pose_focus_index'
+    id = db.Column(db.Integer, primary_key=True)
+    session_id = db.Column(db.String, nullable=False)
+    focus_index = db.Column(db.Float, nullable=False)
+    timestamp = db.Column(db.DateTime, default=datetime.utcnow)

@@ -3,8 +3,9 @@ import numpy as np
 import cv2
 import base64
 from sklearn.metrics.pairwise import cosine_similarity
-from app.models import Attendance, Lecturer, db
-from app.recognition.insightface_loader import face_app, student_embeddings
+from app.models import Attendance, Lecturer, db, FaceEmbedding
+# from app.recognition.insightface_loader import face_app, student_embeddings
+from app.recognition.embedding_utils import face_app
 import logging
 from firebase_admin import auth as firebase_auth
 
@@ -50,39 +51,40 @@ def decode_image(base64_str):
         raise
 
 def find_best_match(embedding, session_id):
-    """Find best matching student embedding, excluding already marked students"""
+    """Find best matching student embedding from DB, excluding already marked students"""
     try:
-        # Get already accounted student IDs
         accounted_ids = set(
             a.student_id for a in Attendance.query.filter_by(session_id=session_id, present=True).all()
         )
         
-        if not student_embeddings:
-            logging.warning("No student embeddings available")
-            return None, 0.0, False
+        all_embeddings = FaceEmbedding.query.all()
         
         best_id = None
         best_score = -1
         is_first_recognition = False
         
-        for sid, ref_emb in student_embeddings.items():
+        for record in all_embeddings:
+            sid = record.student_id
             if sid in accounted_ids:
                 continue  # Skip already marked students
             
             try:
-                score = cosine_similarity([embedding], [ref_emb])[0][0]
+                db_embedding = np.frombuffer(record.embedding, dtype=np.float32)
+                score = cosine_similarity([embedding], [db_embedding])[0][0]
                 if score > best_score:
                     best_id = sid
                     best_score = score
-                    is_first_recognition = True  # This will be the first time we see this student
+                    is_first_recognition = True
             except Exception as e:
-                logging.error(f"Error computing similarity for student {sid}: {str(e)}")
+                logging.error(f"Error comparing embedding for student {sid}: {str(e)}")
                 continue
-        
+
         return best_id, best_score, is_first_recognition
+
     except Exception as e:
         logging.error(f"Error in find_best_match: {str(e)}")
         return None, 0.0, False
+
 
 def mark_attendance(student_id, session_id):
     """Mark attendance for a student in a session"""
@@ -247,32 +249,3 @@ def mark_by_face():
     except Exception as e:
         logging.error(f"Unexpected error in mark_by_face: {str(e)}")
         return jsonify({"error": "Internal server error"}), 500
-    
-# @attendance_recognition_bp.route("/api/attendance/close-sheet/<session_id>", methods=["POST", "OPTIONS"])
-# def close_sheet(session_id):
-#     if request.method == "OPTIONS":
-#         return jsonify({"message": "OK"}), 200, {
-#             "Access-Control-Allow-Origin": "*",
-#             "Access-Control-Allow-Headers": "Content-Type, Authorization",
-#             "Access-Control-Allow-Methods": "POST, OPTIONS"
-#         }
-
-#     try:
-#         id_token = request.headers.get('Authorization', '').replace('Bearer ', '')
-#         lecturer = authenticate_lecturer(id_token)
-#         if isinstance(lecturer, tuple):
-#             return jsonify(lecturer[0]), lecturer[1]
-
-#         session = Attendance.query.filter_by(session_id=session_id).first()
-#         if not session:
-#             return jsonify({"error": "Session not found"}), 404
-#         session.closed = True
-#         session.session_ended_at = db.func.now()
-#         db.session.commit()
-
-#         calculate_focus_index.delay(session.attendance_id)
-#         logger.info(f"Closed session {session_id}, queued focus index calculation")
-#         return jsonify({"message": "Session closed, focus index calculation queued"}), 200
-#     except Exception as e:
-#         logger.error(f"Error in close_sheet: {str(e)}")
-#         return jsonify({"error": "Internal server error"}), 500

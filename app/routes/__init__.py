@@ -6,6 +6,7 @@ import base64
 import numpy as np
 from datetime import datetime
 from typing import Union, Tuple, Dict, List, Any
+import logging
 
 import cv2
 import requests
@@ -18,10 +19,16 @@ from sklearn.metrics.pairwise import cosine_similarity
 from insightface.app import FaceAnalysis
 import google.generativeai as genai
 
+# import current app
+from flask import current_app as app
+
 # Local imports
-from app.models import Course, Enrollment, Student, Lecturer, Attendance, StudentPhoto
+from app.models import Course, Enrollment, Student, Lecturer, Attendance, StudentPhoto, FaceEmbedding, PoseFocusIndex
 from app.db import db
-from app.recognition.insightface_loader import face_app, student_embeddings
+#from app.recognition.insightface_loader import face_app, student_embeddings
+
+from app.routes.attendance_recognition import authenticate_lecturer
+from app.routes.pose_focus_recognition import run_inference_and_calculate_focus
 
 # Firebase imports
 import firebase_admin
@@ -30,6 +37,13 @@ from firebase_admin import auth as firebase_auth, credentials
 # Environment setup
 from dotenv import load_dotenv
 load_dotenv()
+
+# face model loading
+face_app = FaceAnalysis(name='buffalo_l', providers=['CPUExecutionProvider'])
+face_app.prepare(ctx_id=0)
+
+def normalize(vec):
+    return vec / (np.linalg.norm(vec) + 1e-10)
 
 # Configuration
 class Config:
@@ -52,6 +66,8 @@ def initialize_services():
 # Initialize
 model = initialize_services()
 api = Blueprint('api', __name__)
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 # Utility functions
 def add_cors_headers(response):
@@ -98,8 +114,6 @@ class GeminiService:
     
     COMMAND_MAP = {
         "create attendance": {"type": "navigation", "label": "Create Attendance Page", "route": "/create-attendance"},
-        "view attendance": {"type": "navigation", "label": "View Attendance", "route": "/attendance/view"},
-        "add new student": {"type": "navigation", "label": "Add New Student", "route": "/add-student"},
         "view students": {"type": "navigation", "label": "View Students", "route": "/students"},
         "view courses": {"type": "navigation", "label": "View Courses", "route": "/courses"},
     }
@@ -107,9 +121,6 @@ class GeminiService:
     SYSTEM_INSTRUCTION = (
         "Route all requests to either: \ncommands: (\n"
         "\"create attendance\": {\"type\": \"navigation\", \"label\": \"Create Attendance Page\", \"route\": \"/create-attendance\"},\n"
-        "\"view attendance\": {\"type\": \"navigation\", \"label\": \"View Attendance\", \"route\": \"/attendance/view\"},\n"
-        "\"add new student\": {\"type\": \"navigation\", \"label\": \"Add New Student\", \"route\": \"/add-student\"},\n"
-        "\"view students\": {\"type\": \"navigation\", \"label\": \"View Students\", \"route\": \"/students\"},\n"
         "\"view courses\": {\"type\": \"navigation\", \"label\": \"View Courses\", \"route\": \"/courses\"}\n"
         ")\n\n"
         "Return response in two-part JSON:\n{\n  \"uiRespond\": (short simple message confirming),\n  \"backendRespond\": (command title)\n}\n\n"
@@ -460,6 +471,27 @@ def get_attendance_sheet(session_id: str):
     
     return jsonify(records)
 
+# @api.route("/api/attendance/close-sheet", methods=["POST", "OPTIONS"])
+# def close_attendance_sheet():
+#     if request.method == "OPTIONS":
+#         return handle_preflight()
+    
+#     id_token = get_auth_token(request)
+#     lecturer = authenticate_lecturer(id_token)
+    
+#     if isinstance(lecturer, tuple):
+#         return jsonify(lecturer[0]), lecturer[1]
+    
+#     data = request.get_json()
+#     session_id = data.get("session_id")
+    
+#     records = Attendance.query.filter_by(session_id=session_id, closed=False).all()
+#     for record in records:
+#         record.closed = True
+    
+#     db.session.commit()
+#     return jsonify({"message": f"Closed sheet {session_id}"}), 200
+
 @api.route("/api/attendance/close-sheet", methods=["POST", "OPTIONS"])
 def close_attendance_sheet():
     if request.method == "OPTIONS":
@@ -471,15 +503,50 @@ def close_attendance_sheet():
     if isinstance(lecturer, tuple):
         return jsonify(lecturer[0]), lecturer[1]
     
-    data = request.get_json()
-    session_id = data.get("session_id")
-    
-    records = Attendance.query.filter_by(session_id=session_id, closed=False).all()
-    for record in records:
-        record.closed = True
-    
-    db.session.commit()
-    return jsonify({"message": f"Closed sheet {session_id}"}), 200
+    try:
+        data = request.get_json()
+        if not data or not data.get("session_id"):
+            return jsonify({"error": "session_id is required"}), 400
+
+        session_id = data["session_id"]
+        
+        # Use a transaction with locking to prevent concurrent modifications
+        session = Attendance.query.filter_by(session_id=session_id).with_for_update().first()
+        if not session:
+            return jsonify({"error": "Invalid session_id"}), 404
+
+        if session.closed:
+            return jsonify({"error": "Session already closed"}), 400
+
+        # Update session state
+        session.closed = True
+        session.closed_at = datetime.utcnow()
+
+        # Calculate and store focus index
+        try:
+            focus_index = run_inference_and_calculate_focus(session_id)
+            logger.info(f"Focus index calculated for session {session_id}: {focus_index}")
+        except Exception as e:
+            logger.error(f"Error calculating focus index for session {session_id}: {str(e)}")
+            focus_index = 0.0
+
+        # Verify or create PoseFocusIndex entry
+        focus_record = PoseFocusIndex.query.filter_by(session_id=session_id).first()
+        if not focus_record:
+            focus_record = PoseFocusIndex(
+                session_id=session_id,
+                focus_index=float(focus_index),
+                timestamp=datetime.utcnow()
+            )
+            db.session.add(focus_record)
+
+        db.session.commit()
+        return jsonify({"message": f"Closed sheet with id {session_id}", "focus_index": focus_index}), 200
+
+    except Exception as e:
+        logger.error(f"Error in close_sheet: {str(e)}")
+        db.session.rollback()
+        return jsonify({"error": "Internal server error"}), 500
 
 @api.route("/api/enroll", methods=["POST", "OPTIONS"])
 def enroll_student():
@@ -532,6 +599,51 @@ def enroll_student():
         "photos_saved": 3
     }), 200
 
+@api.route("/api/embedding/generate", methods=["POST"])
+def generate_embedding():
+    student_id = request.json.get("student_id")
+    if not student_id:
+        return jsonify({"error": "student_id is required"}), 400
+
+    student = Student.query.get(student_id)
+    if not student:
+        return jsonify({"error": "Student not found"}), 404
+
+    if FaceEmbedding.query.filter_by(student_id=student_id).first():
+        return jsonify({"error": "Embedding already exists"}), 400
+
+    photos = StudentPhoto.query.filter_by(student_id=student_id).all()
+    if len(photos) != 3:
+        return jsonify({"error": "Exactly 3 photos required"}), 400
+
+    embeddings = []
+    for photo in photos:
+        img_array = np.frombuffer(photo.image_data, np.uint8)
+        img = cv2.imdecode(img_array, cv2.IMREAD_COLOR)
+
+        if img is None:
+            app.logger.error(f"Failed to decode image for student_id {student_id}, photo_id {photo.id}")
+            continue  # or return an error if this should fail
+
+        faces = face_app.get(img)
+        if not faces:
+            app.logger.warning(f"No face detected in photo_id {photo.id}")
+            return jsonify({"error": "No face detected in one of the photos"}), 400
+
+        embeddings.append(normalize(faces[0].embedding))
+
+    if not embeddings:
+        return jsonify({"error": "No valid embeddings generated"}), 400
+
+    avg_embedding = np.mean(embeddings, axis=0)
+    embedding_blob = avg_embedding.astype(np.float32).tobytes()
+
+    new_embedding = FaceEmbedding(student_id=student_id, embedding=embedding_blob)
+    db.session.add(new_embedding)
+    db.session.commit()
+
+    return jsonify({"status": "success", "student_id": student_id}), 200
+
 
 @api.route("/api/photo/<int:photo_id>")
 def serve_photo(photo_id: int):
@@ -579,6 +691,51 @@ def lecturer_attendance_performance():
     return jsonify({
         "lecturer": lecturer.name,
         "sessions": sessions,
+    })
+
+# course attendance details
+@api.route('/api/course/<int:course_id>/attendance/details', methods=['GET', 'OPTIONS'])
+def course_attendance_details(course_id: int):
+    if request.method == "OPTIONS":
+        return handle_preflight()
+    
+    id_token = get_auth_token(request)
+    lecturer = authenticate_lecturer(id_token)
+    
+    if isinstance(lecturer, tuple):
+        return jsonify(lecturer[0]), lecturer[1]
+    
+    course = Course.query.filter_by(course_id=course_id, lecturer_id=lecturer.lecturer_id).first()
+    if not course:
+        return jsonify({"error": "Course not found"}), 404
+    
+    attendance_records = (
+        db.session.query(
+            Attendance.student_id,
+            func.count(Attendance.attendance_id).label("total_sessions"),
+            func.sum(case((Attendance.present == True, 1), else_=0)).label("present_count")
+        )
+        .filter(Attendance.course_id == course_id)
+        .group_by(Attendance.student_id)
+        .all()
+    )
+    
+    student_details = []
+    for record in attendance_records:
+        student = Student.query.get(record.student_id)
+        if student:
+            student_details.append({
+                "studentId": student.student_id,
+                "name": student.name,
+                "totalSessions": record.total_sessions,
+                "presentCount": record.present_count,
+                "absentCount": record.total_sessions - record.present_count
+            })
+    
+    return jsonify({
+        "courseId": course.course_id,
+        "courseName": course.name,
+        "students": student_details
     })
 
 @api.route("/api/chat", methods=["POST", "OPTIONS"])
@@ -698,3 +855,38 @@ def get_student_details(student_id: int):
     response = jsonify(response_data)
     return add_cors_headers(response), 200
 
+@api.route('/api/lecturer/courses/focus-index', methods=["GET", "OPTIONS"])
+def get_courses_with_focus_index():
+    if request.method == "OPTIONS":
+        return handle_preflight()
+
+    id_token = get_auth_token(request)
+    lecturer = authenticate_lecturer(id_token)
+
+    if isinstance(lecturer, tuple):  # Error response
+        response = jsonify(lecturer[0])
+        return add_cors_headers(response), lecturer[1]
+
+    result = []
+
+    for course in lecturer.courses:
+        # Find latest session ID for the course
+        latest_session = Attendance.query.filter_by(course_id=course.course_id) \
+            .order_by(Attendance.session_created_at.desc()).first()
+
+        focus_index = None
+        if latest_session:
+            latest_focus = PoseFocusIndex.query.filter_by(session_id=latest_session.session_id) \
+                .order_by(PoseFocusIndex.timestamp.desc()).first()
+
+            if latest_focus:
+                focus_index = latest_focus.focus_index
+
+        result.append({
+            "course_id": course.course_id,
+            "name": course.name,
+            "latest_focus_index": focus_index
+        })
+
+    response = jsonify(result)
+    return add_cors_headers(response)
