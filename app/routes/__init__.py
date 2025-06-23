@@ -548,6 +548,58 @@ def close_attendance_sheet():
         db.session.rollback()
         return jsonify({"error": "Internal server error"}), 500
 
+# @api.route("/api/enroll", methods=["POST", "OPTIONS"])
+# def enroll_student():
+#     if request.method == "OPTIONS":
+#         return handle_preflight()
+    
+#     student_id = request.form.get("student_id", type=int)
+#     name = request.form.get("name")
+#     photos = request.files.getlist("photo")
+
+#     print("===== DEBUG ENROLL REQUEST =====")
+#     print("Request.form:", request.form)
+#     print("Request.files:", request.files)
+#     print("Request.values:", request.values)
+#     print("student_id:", request.form.get("student_id"))
+    
+#     if not student_id:
+#         return jsonify({"error": "Student ID is required"}), 400
+#     if not name:
+#         return jsonify({"error": "Name is required"}), 400
+#     if len(photos) != 3:
+#         return jsonify({"error": "Exactly 3 photos are required"}), 400
+
+#     # Check if student_id already exists
+#     if Student.query.get(student_id):
+#         return jsonify({"error": "Student ID already exists"}), 400
+    
+#     # Create student
+#     new_student = Student(student_id=student_id, name=name)
+#     db.session.add(new_student)
+#     db.session.commit()
+    
+#     # Save photos
+#     for idx, photo in enumerate(photos, start=1):
+#         filename = secure_filename(f"{name}_{idx}.jpg")
+#         new_photo = StudentPhoto(
+#             student_id=student_id,
+#             image_data=photo.read(),
+#             filename=filename,
+#             mimetype=photo.mimetype
+#         )
+#         db.session.add(new_photo)
+    
+#     db.session.commit()
+    
+#     return jsonify({
+#         "success": True,
+#         "message": "Enrollment successful",
+#         "student_id": student_id,
+#         "photos_saved": 3
+#     }), 200
+
+####################FOR TESTING PURPOSES ONLY####################
 @api.route("/api/enroll", methods=["POST", "OPTIONS"])
 def enroll_student():
     if request.method == "OPTIONS":
@@ -573,12 +625,21 @@ def enroll_student():
     # Check if student_id already exists
     if Student.query.get(student_id):
         return jsonify({"error": "Student ID already exists"}), 400
-    
+
+    # Check if course with ID 17 exists
+    course = Course.query.get(17)
+    if not course:
+        return jsonify({"error": "Course ID 17 does not exist"}), 400
+
     # Create student
     new_student = Student(student_id=student_id, name=name)
     db.session.add(new_student)
     db.session.commit()
-    
+
+    # Auto-enroll student into course ID 17
+    enrollment = Enrollment(student_id=student_id, course_id=17)
+    db.session.add(enrollment)
+
     # Save photos
     for idx, photo in enumerate(photos, start=1):
         filename = secure_filename(f"{name}_{idx}.jpg")
@@ -589,15 +650,17 @@ def enroll_student():
             mimetype=photo.mimetype
         )
         db.session.add(new_photo)
-    
+
     db.session.commit()
-    
+
     return jsonify({
         "success": True,
         "message": "Enrollment successful",
         "student_id": student_id,
-        "photos_saved": 3
+        "photos_saved": 3,
+        "auto_enrolled_course_id": 17
     }), 200
+#####################################################
 
 @api.route("/api/embedding/generate", methods=["POST"])
 def generate_embedding():
